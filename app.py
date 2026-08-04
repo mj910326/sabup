@@ -186,7 +186,8 @@ def get_default_data():
         "checklist": {
             "items": ["근태", "청구서", "매출세금계산서 발행", "매출세금계산서 결재", "공문발송", "품의", "운영비 결재상신", "법인카드 전표", "매입세금계산서 발행", "매입세금계산서 결재", "급여작업", "급여내역서", "급여자료보고서 결재", "급여확정"],
             "site_enabled": {},
-            "checked": {}
+            "checked": {},
+            "site_visible": {}
         }
     }
 
@@ -203,6 +204,8 @@ def load_data():
                 for key in default:
                     if key not in loaded:
                         loaded[key] = default[key]
+                if "site_visible" not in loaded.get("checklist", {}):
+                    loaded["checklist"]["site_visible"] = {}
                 return loaded
         except Exception:
             # 오류 시 기존 파일 백업 후 기본값 반환
@@ -874,10 +877,12 @@ elif menu == "📋 월초체크리스트":
                      "매입세금계산서 발행", "매입세금계산서 결재", "급여작업",
                      "급여내역서", "급여자료보고서 결재", "급여확정"],
             "site_enabled": {},
-            "checked": {}
+            "checked": {},
+            "site_visible": {}
         }
 
     cl = data["checklist"]
+    cl.setdefault("site_visible", {})
     items = cl.get("items", [])
 
     # 전체 사업장 목록
@@ -899,6 +904,14 @@ elif menu == "📋 월초체크리스트":
         if site_key not in cl["checked"]:
             cl["checked"][site_key] = {}
 
+    # site_visible 초기화 (새 사업장은 기본으로 표시)
+    for site_key in all_sites:
+        if site_key not in cl["site_visible"]:
+            cl["site_visible"][site_key] = True
+
+    # 실제로 화면에 표시할 사업장만 필터링
+    visible_sites = [s for s in all_sites if cl["site_visible"].get(s, True)]
+
     # 현재 월
     curr_month = datetime.now().strftime("%Y년 %m월")
 
@@ -918,50 +931,79 @@ elif menu == "📋 월초체크리스트":
             st.success("✅ 전체 초기화 완료!")
             st.rerun()
 
+    # ── 표시할 사업장 선택 ──
+    with st.expander("🏢 표시할 사업장 선택 (체크 해제하면 표에서 빠집니다)"):
+        with st.form("toggle_site_visible"):
+            vis_cols = st.columns(4)
+            vis_toggles = {}
+            for i, site_key in enumerate(all_sites):
+                with vis_cols[i % 4]:
+                    site_short = site_key.split(" - ")[1] if " - " in site_key else site_key
+                    vis_toggles[site_key] = st.checkbox(
+                        site_short,
+                        value=cl["site_visible"].get(site_key, True),
+                        key=f"vis_{site_key}"
+                    )
+            if st.form_submit_button("적용"):
+                for site_key, val in vis_toggles.items():
+                    cl["site_visible"][site_key] = val
+                save_data(data)
+                st.success("적용됨!")
+                st.rerun()
+
     st.markdown("---")
 
-    # ── 체크리스트 테이블 ──
-    # 헤더
-    header_cols = st.columns([2] + [1] * len(all_sites))
-    with header_cols[0]:
-        st.markdown("**업무항목**")
-    for i, site_key in enumerate(all_sites):
-        with header_cols[i+1]:
-            site_short = site_key.split(" - ")[1] if " - " in site_key else site_key
-            st.markdown(f"**{site_short}**")
+    # 그리드 라인이 보이도록 각 셀에 테두리 적용
+    st.markdown("""
+    <style>
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+        border: 1px solid #ddd;
+        padding: 6px 10px !important;
+        background: white;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-    st.markdown("---")
+    if not visible_sites:
+        st.warning("표시할 사업장이 없습니다. 위에서 사업장을 선택해주세요.")
+    else:
+        # ── 체크리스트 테이블 ──
+        # 헤더
+        header_cols = st.columns([2] + [1] * len(visible_sites))
+        with header_cols[0]:
+            st.markdown("**업무항목**")
+        for i, site_key in enumerate(visible_sites):
+            with header_cols[i+1]:
+                site_short = site_key.split(" - ")[1] if " - " in site_key else site_key
+                st.markdown(f"**{site_short}**")
 
-    # 항목별 행
-    for idx, item in enumerate(items):
-        # 홀짝 줄 배경색
-        bg = "#f8f9fa" if idx % 2 == 0 else "#ffffff"
-        st.markdown(f"""<div style="background:{bg}; padding:4px 8px; border-radius:4px; margin:1px 0;">""", unsafe_allow_html=True)
-        row_cols = st.columns([2] + [1] * len(all_sites))
-        with row_cols[0]:
-            any_checked = any(cl["checked"].get(sk, {}).get(item, False) for sk in all_sites)
-            if any_checked:
-                st.markdown(f"<span style='color:gray;text-decoration:line-through'>{item}</span>", unsafe_allow_html=True)
-            else:
-                st.markdown(item)
-
-        for i, site_key in enumerate(all_sites):
-            with row_cols[i+1]:
-                enabled = cl["site_enabled"].get(site_key, {}).get(item, True)
-                if enabled:
-                    checked = cl["checked"].get(site_key, {}).get(item, False)
-                    # 세션 상태 직접 사용
-                    cb_key = f"cb_{site_key}_{item}"
-                    if cb_key not in st.session_state:
-                        st.session_state[cb_key] = checked
-                    new_val = st.checkbox("", key=cb_key, label_visibility="collapsed")
-                    if new_val != checked:
-                        if site_key not in cl["checked"]:
-                            cl["checked"][site_key] = {}
-                        cl["checked"][site_key][item] = new_val
-                        save_data(data)
+        # 항목별 행
+        for idx, item in enumerate(items):
+            row_cols = st.columns([2] + [1] * len(visible_sites))
+            with row_cols[0]:
+                any_checked = any(cl["checked"].get(sk, {}).get(item, False) for sk in visible_sites)
+                if any_checked:
+                    st.markdown(f"<span style='color:gray;text-decoration:line-through'>{item}</span>", unsafe_allow_html=True)
                 else:
-                    st.markdown("—")
+                    st.markdown(item)
+
+            for i, site_key in enumerate(visible_sites):
+                with row_cols[i+1]:
+                    enabled = cl["site_enabled"].get(site_key, {}).get(item, True)
+                    if enabled:
+                        checked = cl["checked"].get(site_key, {}).get(item, False)
+                        # 세션 상태 직접 사용
+                        cb_key = f"cb_{site_key}_{item}"
+                        if cb_key not in st.session_state:
+                            st.session_state[cb_key] = checked
+                        new_val = st.checkbox("", key=cb_key, label_visibility="collapsed")
+                        if new_val != checked:
+                            if site_key not in cl["checked"]:
+                                cl["checked"][site_key] = {}
+                            cl["checked"][site_key][item] = new_val
+                            save_data(data)
+                    else:
+                        st.markdown("—")
 
     st.markdown("---")
 
