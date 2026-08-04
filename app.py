@@ -218,7 +218,8 @@ def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-API_KEY = "여기에_CLAUDE_API키_입력"
+import os
+API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 data = load_data()
 settings = data["settings"]
 
