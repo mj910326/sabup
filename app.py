@@ -345,19 +345,62 @@ DATA_FILE = "data.json"
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = "mj910326/sabup"
 GITHUB_PATH = "data.json"
-GITHUB_BRANCH = "main"
+GITHUB_CODE_BRANCH = "main"      # 앱 코드가 배포되는 브랜치 (여기엔 절대 쓰지 않음)
+GITHUB_BRANCH = "app-data"       # 데이터 전용 브랜치 (Streamlit이 감시하지 않음)
 
 def _github_headers():
     return {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
 
+def ensure_data_branch():
+    """데이터 전용 브랜치가 없으면 만든다. (앱 재배포를 막기 위해 코드 브랜치와 분리)"""
+    if not GITHUB_TOKEN:
+        return False
+    if st.session_state.get("_gh_branch_ok"):
+        return True
+    try:
+        import requests
+        base = f"https://api.github.com/repos/{GITHUB_REPO}/git/refs/heads"
+        # 이미 있으면 통과
+        r = requests.get(f"{base}/{GITHUB_BRANCH}", headers=_github_headers(), timeout=15)
+        if r.status_code == 200:
+            st.session_state["_gh_branch_ok"] = True
+            return True
+        # 없으면 코드 브랜치 기준으로 생성
+        r2 = requests.get(f"{base}/{GITHUB_CODE_BRANCH}", headers=_github_headers(), timeout=15)
+        if r2.status_code != 200:
+            st.session_state["_gh_status"] = (
+                "fail",
+                f"기준 브랜치 '{GITHUB_CODE_BRANCH}'를 찾을 수 없습니다 (코드 {r2.status_code}). "
+                "저장소의 기본 브랜치명이 master인지 확인해주세요."
+            )
+            return False
+        sha = r2.json()["object"]["sha"]
+        r3 = requests.post(
+            f"https://api.github.com/repos/{GITHUB_REPO}/git/refs",
+            headers=_github_headers(),
+            json={"ref": f"refs/heads/{GITHUB_BRANCH}", "sha": sha},
+            timeout=15,
+        )
+        if r3.status_code in (200, 201):
+            st.session_state["_gh_branch_ok"] = True
+            return True
+        st.session_state["_gh_status"] = (
+            "fail", f"데이터 브랜치 생성 실패 (코드 {r3.status_code}): {r3.text[:150]}"
+        )
+        return False
+    except Exception as e:
+        st.session_state["_gh_status"] = ("fail", f"브랜치 확인 오류: {type(e).__name__} - {str(e)[:150]}")
+        return False
+
 def github_load():
-    """GitHub 저장소에서 data.json을 읽어온다. 실패하면 None 반환."""
+    """데이터 브랜치에서 data.json을 읽어온다. 실패하면 None 반환."""
     if not GITHUB_TOKEN:
         return None
     try:
         import requests, base64
         url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_PATH}"
-        resp = requests.get(url, headers=_github_headers(), params={"ref": GITHUB_BRANCH}, timeout=10)
+        resp = requests.get(url, headers=_github_headers(),
+                            params={"ref": GITHUB_BRANCH}, timeout=10)
         if resp.status_code == 200:
             content = resp.json()
             decoded = base64.b64decode(content["content"]).decode("utf-8")
@@ -367,14 +410,17 @@ def github_load():
         return None
 
 def github_save(data):
-    """data.json을 GitHub 저장소에 커밋한다. 결과를 세션에 기록한다."""
+    """data.json을 데이터 전용 브랜치에 커밋한다. (main에는 쓰지 않음)"""
     if not GITHUB_TOKEN:
         st.session_state["_gh_status"] = ("none", "GITHUB_TOKEN이 설정되지 않아 영구 저장이 꺼져 있습니다.")
+        return False
+    if not ensure_data_branch():
         return False
     try:
         import requests, base64
         url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_PATH}"
-        get_resp = requests.get(url, headers=_github_headers(), params={"ref": GITHUB_BRANCH}, timeout=15)
+        get_resp = requests.get(url, headers=_github_headers(),
+                                params={"ref": GITHUB_BRANCH}, timeout=15)
         sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
         content_str = json.dumps(data, ensure_ascii=False, indent=2)
         b64 = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
@@ -1568,6 +1614,8 @@ elif menu == "📋 월초체크리스트":
             col_widths = col_widths + [spacer]
 
         with grid:
+            pending_changes = 0
+
             # ── 헤더 행 ──
             header_cols = st.columns(col_widths, gap="small")
             with header_cols[0]:
@@ -1596,12 +1644,16 @@ elif menu == "📋 월초체크리스트":
                             cb_key = f"cb_{site_key}_{item}"
                             if cb_key not in st.session_state:
                                 st.session_state[cb_key] = checked
-                            new_val = st.checkbox("", key=cb_key, label_visibility="collapsed")
+                            new_val = st.checkbox(
+                                f"{site_key} {item}",
+                                key=cb_key,
+                                label_visibility="collapsed"
+                            )
                             if new_val != checked:
                                 if site_key not in cl["checked"]:
                                     cl["checked"][site_key] = {}
                                 cl["checked"][site_key][item] = new_val
-                                save_data(data)
+                                pending_changes += 1
                         else:
                             st.markdown(cellbox("—", disabled_bg, "#9aa0a6"),
                                         unsafe_allow_html=True)
@@ -1609,6 +1661,13 @@ elif menu == "📋 월초체크리스트":
                 if spacer > 0:
                     with row_cols[-1]:
                         st.markdown("<div class='cellbox'></div>", unsafe_allow_html=True)
+
+            # 이번 렌더에서 바뀐 체크가 있으면 한 번만 저장 (커밋 폭주 방지)
+            if pending_changes:
+                save_data(data)
+                status = st.session_state.get("_gh_status")
+                if status and status[0] == "fail":
+                    st.error(f"⚠️ {status[1]}")
 
     st.markdown("---")
 
@@ -1669,8 +1728,11 @@ elif menu == "⚙️ 설정":
 
     with tab_s4:
         st.markdown("### 💾 데이터 영구 저장 상태")
-        st.caption("Streamlit Cloud는 앱이 재시작되면 로컬 파일이 초기화됩니다. "
-                   "GitHub에 저장해야 다음날에도 데이터가 유지됩니다.")
+        st.caption(
+            f"데이터는 `{GITHUB_BRANCH}` 브랜치에 저장됩니다. "
+            f"앱 코드가 있는 `{GITHUB_CODE_BRANCH}` 브랜치와 분리되어 있어 "
+            "저장해도 앱이 재배포되지 않습니다."
+        )
 
         if not GITHUB_TOKEN:
             st.error(
@@ -1680,7 +1742,10 @@ elif menu == "⚙️ 설정":
                 "```\nGITHUB_TOKEN = \"ghp_...\"\n```"
             )
         else:
-            st.info(f"토큰 설정됨 (끝 4자리: ...{GITHUB_TOKEN[-4:]}) / 저장소: {GITHUB_REPO}")
+            st.info(
+                f"토큰 설정됨 (끝 4자리: ...{GITHUB_TOKEN[-4:]})\n\n"
+                f"저장소: `{GITHUB_REPO}` / 데이터 브랜치: `{GITHUB_BRANCH}`"
+            )
 
         if st.button("🔍 저장 연결 테스트", type="primary"):
             with st.spinner("GitHub 연결 확인 중..."):
@@ -1689,16 +1754,16 @@ elif menu == "⚙️ 설정":
             if ok:
                 st.balloons()
                 st.markdown(
-                    f"✅ 정상입니다. [저장소에서 data.json 확인하기]"
+                    f"✅ 정상입니다. [저장된 data.json 확인하기]"
                     f"(https://github.com/{GITHUB_REPO}/blob/{GITHUB_BRANCH}/{GITHUB_PATH})"
                 )
             else:
-                st.markdown("""
+                st.markdown(f"""
 **확인할 것:**
 1. 토큰에 **repo** 권한이 있는지 (Fine-grained 토큰이면 Contents: Read and write)
 2. 토큰이 만료되지 않았는지
-3. 저장소 이름이 맞는지 (`mj910326/sabup`)
-4. 기본 브랜치가 `main`인지 (`master`면 코드 수정 필요)
+3. 저장소 이름이 맞는지 (`{GITHUB_REPO}`)
+4. 기본 브랜치가 `{GITHUB_CODE_BRANCH}`인지 (`master`면 코드의 GITHUB_CODE_BRANCH 수정 필요)
                 """)
 
         st.markdown("---")
