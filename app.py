@@ -948,10 +948,13 @@ elif menu == "📋 월초체크리스트":
         "align": "center",
         "spacer": 0.0,
         "row_height": 38,
+        "font_size": 14,
         "header_bg": "#1f77b4",
         "header_text": "#ffffff",
         "item_bg": "#f0f2f6",
         "item_text": "#262730",
+        "grid_color": "#c8ccd4",
+        "disabled_bg": "#fafafa",
     }
     for _k, _v in _ldef.items():
         cl["layout"].setdefault(_k, _v)
@@ -1023,52 +1026,61 @@ elif menu == "📋 월초체크리스트":
                 st.success("적용됨!")
                 st.rerun()
 
-    # ── 표 크기/간격/정렬/색상 조절 ──
-    with st.expander("📐 표 모양 조절 (크기·간격·색상)"):
+    # ── 표 모양 조절 ──
+    with st.expander("📐 표 모양 조절 (크기·간격·색상·글씨)"):
         layout = cl["layout"]
         with st.form("layout_form"):
-            st.markdown("**칸 너비 / 간격**")
+            st.markdown("**칸 너비**")
             c1, c2 = st.columns(2)
             with c1:
                 item_width = st.slider("업무항목 칸 너비", 0.3, 6.0,
                                        float(layout.get("item_width", 2.0)), step=0.1)
-                padding = st.slider("칸 내부 여백(px)", 0, 24, int(layout.get("padding", 8)))
             with c2:
                 site_width = st.slider("사업장 칸 너비", 0.3, 6.0,
                                        float(layout.get("site_width", 1.0)), step=0.1)
-                row_height = st.slider("행 높이(px)", 24, 80, int(layout.get("row_height", 38)))
-
             spacer = st.slider(
                 "오른쪽 빈 여백 (클수록 표가 왼쪽으로 좁아짐)",
                 0.0, 20.0, float(layout.get("spacer", 0.0)), step=0.5
             )
-            align = st.selectbox("글자 정렬", ["가운데", "왼쪽"],
-                                 index=0 if layout.get("align", "center") == "center" else 1)
+
+            st.markdown("---")
+            st.markdown("**행 높이 / 글씨**")
+            d1, d2, d3 = st.columns(3)
+            with d1:
+                row_height = st.slider("행 높이(px)", 20, 80, int(layout.get("row_height", 38)))
+            with d2:
+                font_size = st.slider("글씨 크기(px)", 9, 24, int(layout.get("font_size", 14)))
+            with d3:
+                align = st.selectbox("글자 정렬", ["가운데", "왼쪽"],
+                                     index=0 if layout.get("align", "center") == "center" else 1)
 
             st.markdown("---")
             st.markdown("**색상**")
-            cc1, cc2, cc3, cc4 = st.columns(4)
+            cc1, cc2, cc3 = st.columns(3)
             with cc1:
                 header_bg = st.color_picker("헤더 배경", layout.get("header_bg", "#1f77b4"))
-            with cc2:
                 header_text = st.color_picker("헤더 글자", layout.get("header_text", "#ffffff"))
-            with cc3:
+            with cc2:
                 item_bg = st.color_picker("업무항목 배경", layout.get("item_bg", "#f0f2f6"))
-            with cc4:
                 item_text = st.color_picker("업무항목 글자", layout.get("item_text", "#262730"))
+            with cc3:
+                grid_color = st.color_picker("표 선 색상", layout.get("grid_color", "#c8ccd4"))
+                disabled_bg = st.color_picker("제외된 칸 배경", layout.get("disabled_bg", "#fafafa"))
 
             if st.form_submit_button("적용", type="primary"):
                 cl["layout"] = {
                     "item_width": item_width,
                     "site_width": site_width,
-                    "padding": padding,
-                    "row_height": row_height,
-                    "align": "center" if align == "가운데" else "left",
                     "spacer": spacer,
+                    "row_height": row_height,
+                    "font_size": font_size,
+                    "align": "center" if align == "가운데" else "left",
                     "header_bg": header_bg,
                     "header_text": header_text,
                     "item_bg": item_bg,
                     "item_text": item_text,
+                    "grid_color": grid_color,
+                    "disabled_bg": disabled_bg,
                 }
                 save_data(data)
                 st.success("적용됨!")
@@ -1078,81 +1090,139 @@ elif menu == "📋 월초체크리스트":
 
     layout = cl["layout"]
     align = layout.get("align", "center")
-    padding = int(layout.get("padding", 8))
     spacer = float(layout.get("spacer", 0.0))
     row_h = int(layout.get("row_height", 38))
+    font_size = int(layout.get("font_size", 14))
     header_bg = layout.get("header_bg", "#1f77b4")
     header_text = layout.get("header_text", "#ffffff")
     item_bg = layout.get("item_bg", "#f0f2f6")
     item_text = layout.get("item_text", "#262730")
+    grid_color = layout.get("grid_color", "#c8ccd4")
+    disabled_bg = layout.get("disabled_bg", "#fafafa")
 
     flex_align = "center" if align == "center" else "flex-start"
     text_align = "center" if align == "center" else "left"
 
-    # 체크박스 셀: 가운데 정렬 + 행 높이 통일
-    st.markdown(f"""
-    <style>
-    div[data-testid="stHorizontalBlock"] {{ gap: 4px !important; }}
-    /* 체크박스가 들어있는 테두리 칸 */
-    div[data-testid="stVerticalBlockBorderWrapper"] {{
-        min-height: {row_h}px;
-        display: flex;
-        align-items: center;
-    }}
-    div[data-testid="stVerticalBlockBorderWrapper"] > div {{
-        width: 100%;
-        padding: {padding}px !important;
-    }}
-    /* 체크박스 자체를 칸 가운데로 */
-    div[data-testid="stCheckbox"],
-    div[data-testid="stCheckbox"] > label,
-    .stCheckbox, .stCheckbox > label {{
-        display: flex !important;
-        justify-content: center !important;
-        align-items: center !important;
-        width: 100% !important;
-        margin: 0 !important;
-    }}
-    </style>
-    """, unsafe_allow_html=True)
-
-    def cell_html(text, bg, color, bold=False):
-        weight = "600" if bold else "400"
-        return (
-            f"<div style=\"background:{bg};color:{color};font-weight:{weight};"
-            f"border:1px solid rgba(0,0,0,0.12);border-radius:8px;"
-            f"padding:{padding}px;min-height:{row_h}px;box-sizing:border-box;"
-            f"display:flex;align-items:center;justify-content:{flex_align};"
-            f"text-align:{text_align};font-size:0.9rem;line-height:1.2;\">{text}</div>"
-        )
-
     if not visible_sites:
         st.warning("표시할 사업장이 없습니다. 위에서 사업장을 선택해주세요.")
     else:
+        # 표 영역만 스타일이 적용되도록 전용 컨테이너 사용
+        try:
+            grid = st.container(key="checklist_grid")
+            SCOPE = ".st-key-checklist_grid "
+        except TypeError:
+            # 구버전 Streamlit은 key를 지원하지 않으므로 범위 지정 없이 적용
+            grid = st.container()
+            SCOPE = ""
+
+        # 표 영역 전용 CSS - 모든 칸이 같은 높이/테두리를 갖는 진짜 표 형태
+        st.markdown(f"""
+        <style>
+        {SCOPE}div[data-testid="stHorizontalBlock"] {{
+            gap: 0 !important;
+        }}
+        {SCOPE}div[data-testid="stVerticalBlock"] {{
+            gap: 0 !important;
+        }}
+        /* 각 칸 = 컬럼 자체에 테두리를 줘서 표처럼 선이 이어지게 */
+        {SCOPE}div[data-testid="column"] {{
+            border-right: 1px solid {grid_color};
+            border-bottom: 1px solid {grid_color};
+            height: {row_h}px;
+            min-height: {row_h}px;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            overflow: hidden;
+            padding: 0 !important;
+        }}
+        /* 맨 왼쪽 칸에만 왼쪽 선 */
+        {SCOPE}div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:first-child {{
+            border-left: 1px solid {grid_color};
+        }}
+        /* 첫 행(헤더)에만 윗선 */
+        {SCOPE}div[data-testid="stHorizontalBlock"]:first-of-type > div[data-testid="column"] {{
+            border-top: 1px solid {grid_color};
+        }}
+        /* 칸 안 요소들의 기본 여백 제거 */
+        {SCOPE}div[data-testid="stElementContainer"],
+        {SCOPE}div[data-testid="stVerticalBlock"] > div {{
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100%;
+        }}
+        /* 체크박스를 칸 정중앙에 */
+        {SCOPE}div[data-testid="stCheckbox"],
+        {SCOPE}.stCheckbox {{
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            width: 100% !important;
+            height: {row_h}px !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }}
+        {SCOPE}div[data-testid="stCheckbox"] label,
+        {SCOPE}.stCheckbox label {{
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            width: 100% !important;
+            height: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }}
+        /* 셀 텍스트 */
+        .cellbox {{
+            width: 100%;
+            height: {row_h}px;
+            display: flex;
+            align-items: center;
+            justify-content: {flex_align};
+            padding: 0 8px;
+            box-sizing: border-box;
+            font-size: {font_size}px;
+            line-height: 1.15;
+            text-align: {text_align};
+            overflow: hidden;
+        }}
+        </style>
+        """, unsafe_allow_html=True)
+
+        def cellbox(text, bg, color, bold=False):
+            weight = "700" if bold else "400"
+            return (f"<div class='cellbox' style='background:{bg};color:{color};"
+                    f"font-weight:{weight};'>{text}</div>")
+
         col_widths = [layout.get("item_width", 2.0)] + [layout.get("site_width", 1.0)] * len(visible_sites)
         if spacer > 0:
             col_widths = col_widths + [spacer]
 
-        # ── 헤더 ──
-        header_cols = st.columns(col_widths, gap="small")
-        with header_cols[0]:
-            st.markdown(cell_html("업무항목", header_bg, header_text, bold=True), unsafe_allow_html=True)
-        for i, site_key in enumerate(visible_sites):
-            with header_cols[i+1]:
-                site_short = site_key.split(" - ")[1] if " - " in site_key else site_key
-                st.markdown(cell_html(site_short, header_bg, header_text, bold=True), unsafe_allow_html=True)
-
-        # ── 항목별 행 ──
-        for idx, item in enumerate(items):
-            row_cols = st.columns(col_widths, gap="small")
-            with row_cols[0]:
-                st.markdown(cell_html(item, item_bg, item_text), unsafe_allow_html=True)
-
+        with grid:
+            # ── 헤더 행 ──
+            header_cols = st.columns(col_widths, gap="small")
+            with header_cols[0]:
+                st.markdown(cellbox("업무항목", header_bg, header_text, bold=True),
+                            unsafe_allow_html=True)
             for i, site_key in enumerate(visible_sites):
-                with row_cols[i+1]:
-                    enabled = cl["site_enabled"].get(site_key, {}).get(item, True)
-                    if enabled:
-                        with st.container(border=True):
+                with header_cols[i+1]:
+                    site_short = site_key.split(" - ")[1] if " - " in site_key else site_key
+                    st.markdown(cellbox(site_short, header_bg, header_text, bold=True),
+                                unsafe_allow_html=True)
+            if spacer > 0:
+                with header_cols[-1]:
+                    st.markdown("<div class='cellbox'></div>", unsafe_allow_html=True)
+
+            # ── 항목별 행 ──
+            for idx, item in enumerate(items):
+                row_cols = st.columns(col_widths, gap="small")
+                with row_cols[0]:
+                    st.markdown(cellbox(item, item_bg, item_text), unsafe_allow_html=True)
+
+                for i, site_key in enumerate(visible_sites):
+                    with row_cols[i+1]:
+                        enabled = cl["site_enabled"].get(site_key, {}).get(item, True)
+                        if enabled:
                             checked = cl["checked"].get(site_key, {}).get(item, False)
                             cb_key = f"cb_{site_key}_{item}"
                             if cb_key not in st.session_state:
@@ -1163,12 +1233,13 @@ elif menu == "📋 월초체크리스트":
                                     cl["checked"][site_key] = {}
                                 cl["checked"][site_key][item] = new_val
                                 save_data(data)
-                    else:
-                        # 비활성 칸도 같은 높이/테두리로 렌더링해서 줄이 안 어긋나게
-                        st.markdown(
-                            cell_html("—", "#ffffff", "#9aa0a6"),
-                            unsafe_allow_html=True
-                        )
+                        else:
+                            st.markdown(cellbox("—", disabled_bg, "#9aa0a6"),
+                                        unsafe_allow_html=True)
+
+                if spacer > 0:
+                    with row_cols[-1]:
+                        st.markdown("<div class='cellbox'></div>", unsafe_allow_html=True)
 
     st.markdown("---")
 
