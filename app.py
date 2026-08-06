@@ -157,9 +157,58 @@ def read_salary_report(file):
         return f"읽기 오류: {str(e)}"
 
 # ─────────────────────────────────────────
-# 데이터 저장/로드
+# 데이터 저장/로드 (GitHub 영구 저장)
 # ─────────────────────────────────────────
 DATA_FILE = "data.json"
+
+# Streamlit Cloud는 앱이 잠들었다 깨어날 때 로컬 파일이 초기화되므로,
+# GITHUB_TOKEN이 있으면 data.json을 GitHub 저장소에도 함께 저장해서
+# 재시작해도 데이터가 유지되게 한다.
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_REPO = "mj910326/sabup"
+GITHUB_PATH = "data.json"
+GITHUB_BRANCH = "main"
+
+def _github_headers():
+    return {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+
+def github_load():
+    """GitHub 저장소에서 data.json을 읽어온다. 실패하면 None 반환."""
+    if not GITHUB_TOKEN:
+        return None
+    try:
+        import requests, base64
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_PATH}"
+        resp = requests.get(url, headers=_github_headers(), params={"ref": GITHUB_BRANCH}, timeout=10)
+        if resp.status_code == 200:
+            content = resp.json()
+            decoded = base64.b64decode(content["content"]).decode("utf-8")
+            return json.loads(decoded)
+        return None
+    except Exception:
+        return None
+
+def github_save(data):
+    """data.json을 GitHub 저장소에 커밋한다. 실패해도 조용히 넘어간다."""
+    if not GITHUB_TOKEN:
+        return
+    try:
+        import requests, base64
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_PATH}"
+        get_resp = requests.get(url, headers=_github_headers(), params={"ref": GITHUB_BRANCH}, timeout=10)
+        sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
+        content_str = json.dumps(data, ensure_ascii=False, indent=2)
+        b64 = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
+        payload = {
+            "message": f"data 자동 저장 {datetime.now().isoformat(timespec='seconds')}",
+            "content": b64,
+            "branch": GITHUB_BRANCH,
+        }
+        if sha:
+            payload["sha"] = sha
+        requests.put(url, headers=_github_headers(), json=payload, timeout=10)
+    except Exception:
+        pass
 
 def get_default_data():
     return {
@@ -191,7 +240,22 @@ def get_default_data():
         }
     }
 
+def _fill_defaults(loaded):
+    default = get_default_data()
+    for key in default:
+        if key not in loaded:
+            loaded[key] = default[key]
+    if "site_visible" not in loaded.get("checklist", {}):
+        loaded["checklist"]["site_visible"] = {}
+    return loaded
+
 def load_data():
+    # 1순위: GitHub에 저장된 최신 데이터 (앱이 재시작돼도 유지됨)
+    gh = github_load()
+    if gh is not None:
+        return _fill_defaults(gh)
+
+    # 2순위: 로컬 파일 (같은 세션 내에서는 유효)
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -199,16 +263,8 @@ def load_data():
                 if not content_str:
                     raise ValueError("빈 파일")
                 loaded = json.loads(content_str)
-                # 기본값에 없는 키 보완
-                default = get_default_data()
-                for key in default:
-                    if key not in loaded:
-                        loaded[key] = default[key]
-                if "site_visible" not in loaded.get("checklist", {}):
-                    loaded["checklist"]["site_visible"] = {}
-                return loaded
+                return _fill_defaults(loaded)
         except Exception:
-            # 오류 시 기존 파일 백업 후 기본값 반환
             import shutil
             try:
                 shutil.copy(DATA_FILE, DATA_FILE + ".bak")
@@ -220,6 +276,7 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    github_save(data)
 
 import os
 API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -953,57 +1010,53 @@ elif menu == "📋 월초체크리스트":
 
     st.markdown("---")
 
-    # 그리드 라인이 보이도록 각 셀에 테두리 적용
+    # 칸 사이 여백을 줄여서 표처럼 붙어 보이게 조정
     st.markdown("""
     <style>
-    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
-        border: 1px solid #ddd;
-        padding: 6px 10px !important;
-        background: white;
-    }
+    div[data-testid="stHorizontalBlock"] { gap: 0.25rem; }
     </style>
     """, unsafe_allow_html=True)
 
     if not visible_sites:
         st.warning("표시할 사업장이 없습니다. 위에서 사업장을 선택해주세요.")
     else:
-        # ── 체크리스트 테이블 ──
-        # 헤더
-        header_cols = st.columns([2] + [1] * len(visible_sites))
+        col_widths = [2] + [1] * len(visible_sites)
+
+        # ── 헤더 (테두리 박스) ──
+        header_cols = st.columns(col_widths, gap="small")
         with header_cols[0]:
-            st.markdown("**업무항목**")
+            with st.container(border=True):
+                st.markdown("**업무항목**")
         for i, site_key in enumerate(visible_sites):
             with header_cols[i+1]:
-                site_short = site_key.split(" - ")[1] if " - " in site_key else site_key
-                st.markdown(f"**{site_short}**")
+                with st.container(border=True):
+                    site_short = site_key.split(" - ")[1] if " - " in site_key else site_key
+                    st.markdown(f"**{site_short}**")
 
-        # 항목별 행
+        # ── 항목별 행 (테두리 박스) ──
         for idx, item in enumerate(items):
-            row_cols = st.columns([2] + [1] * len(visible_sites))
+            row_cols = st.columns(col_widths, gap="small")
             with row_cols[0]:
-                any_checked = any(cl["checked"].get(sk, {}).get(item, False) for sk in visible_sites)
-                if any_checked:
-                    st.markdown(f"<span style='color:gray;text-decoration:line-through'>{item}</span>", unsafe_allow_html=True)
-                else:
+                with st.container(border=True):
                     st.markdown(item)
 
             for i, site_key in enumerate(visible_sites):
                 with row_cols[i+1]:
-                    enabled = cl["site_enabled"].get(site_key, {}).get(item, True)
-                    if enabled:
-                        checked = cl["checked"].get(site_key, {}).get(item, False)
-                        # 세션 상태 직접 사용
-                        cb_key = f"cb_{site_key}_{item}"
-                        if cb_key not in st.session_state:
-                            st.session_state[cb_key] = checked
-                        new_val = st.checkbox("", key=cb_key, label_visibility="collapsed")
-                        if new_val != checked:
-                            if site_key not in cl["checked"]:
-                                cl["checked"][site_key] = {}
-                            cl["checked"][site_key][item] = new_val
-                            save_data(data)
-                    else:
-                        st.markdown("—")
+                    with st.container(border=True):
+                        enabled = cl["site_enabled"].get(site_key, {}).get(item, True)
+                        if enabled:
+                            checked = cl["checked"].get(site_key, {}).get(item, False)
+                            cb_key = f"cb_{site_key}_{item}"
+                            if cb_key not in st.session_state:
+                                st.session_state[cb_key] = checked
+                            new_val = st.checkbox("", key=cb_key, label_visibility="collapsed")
+                            if new_val != checked:
+                                if site_key not in cl["checked"]:
+                                    cl["checked"][site_key] = {}
+                                cl["checked"][site_key][item] = new_val
+                                save_data(data)
+                        else:
+                            st.markdown("—")
 
     st.markdown("---")
 
