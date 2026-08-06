@@ -940,6 +940,12 @@ elif menu == "📋 월초체크리스트":
 
     cl = data["checklist"]
     cl.setdefault("site_visible", {})
+    cl.setdefault("layout", {
+        "item_width": 2,
+        "site_width": 1,
+        "padding": 10,
+        "align": "center"
+    })
     items = cl.get("items", [])
 
     # 전체 사업장 목록
@@ -1008,37 +1014,72 @@ elif menu == "📋 월초체크리스트":
                 st.success("적용됨!")
                 st.rerun()
 
+    # ── 표 크기/간격/정렬 조절 ──
+    with st.expander("📐 표 크기·간격 조절"):
+        layout = cl["layout"]
+        with st.form("layout_form"):
+            c1, c2 = st.columns(2)
+            with c1:
+                item_width = st.slider("업무항목 칸 너비", 1, 5, layout.get("item_width", 2))
+                padding = st.slider("칸 내부 여백(px) - 작을수록 촘촘함", 0, 24, layout.get("padding", 10))
+            with c2:
+                site_width = st.slider("사업장 칸 너비", 1, 5, layout.get("site_width", 1))
+                align = st.selectbox("글자 정렬", ["가운데", "왼쪽"], index=0 if layout.get("align", "center") == "center" else 1)
+            if st.form_submit_button("적용", type="primary"):
+                cl["layout"] = {
+                    "item_width": item_width,
+                    "site_width": site_width,
+                    "padding": padding,
+                    "align": "center" if align == "가운데" else "left"
+                }
+                save_data(data)
+                st.success("적용됨! 아래 표에 바로 반영됩니다.")
+                st.rerun()
+
     st.markdown("---")
 
-    # 칸 사이 여백을 줄여서 표처럼 붙어 보이게 조정
-    st.markdown("""
+    layout = cl["layout"]
+    align = layout.get("align", "center")
+    padding = layout.get("padding", 10)
+    css_align = "center" if align == "center" else "flex-start"
+    text_align = "center" if align == "center" else "left"
+
+    # 칸 여백/정렬을 설정값대로 적용
+    st.markdown(f"""
     <style>
-    div[data-testid="stHorizontalBlock"] { gap: 0.25rem; }
+    div[data-testid="stHorizontalBlock"] {{ gap: 0.25rem; }}
+    div[data-testid="stVerticalBlockBorderWrapper"] > div {{
+        padding: {padding}px !important;
+    }}
+    div[data-testid="stCheckbox"] {{
+        display: flex;
+        justify-content: {css_align};
+    }}
     </style>
     """, unsafe_allow_html=True)
 
     if not visible_sites:
         st.warning("표시할 사업장이 없습니다. 위에서 사업장을 선택해주세요.")
     else:
-        col_widths = [2] + [1] * len(visible_sites)
+        col_widths = [layout.get("item_width", 2)] + [layout.get("site_width", 1)] * len(visible_sites)
 
         # ── 헤더 (테두리 박스) ──
         header_cols = st.columns(col_widths, gap="small")
         with header_cols[0]:
             with st.container(border=True):
-                st.markdown("**업무항목**")
+                st.markdown(f"<div style='text-align:{text_align}'><b>업무항목</b></div>", unsafe_allow_html=True)
         for i, site_key in enumerate(visible_sites):
             with header_cols[i+1]:
                 with st.container(border=True):
                     site_short = site_key.split(" - ")[1] if " - " in site_key else site_key
-                    st.markdown(f"**{site_short}**")
+                    st.markdown(f"<div style='text-align:{text_align}'><b>{site_short}</b></div>", unsafe_allow_html=True)
 
         # ── 항목별 행 (테두리 박스) ──
         for idx, item in enumerate(items):
             row_cols = st.columns(col_widths, gap="small")
             with row_cols[0]:
                 with st.container(border=True):
-                    st.markdown(item)
+                    st.markdown(f"<div style='text-align:{text_align}'>{item}</div>", unsafe_allow_html=True)
 
             for i, site_key in enumerate(visible_sites):
                 with row_cols[i+1]:
