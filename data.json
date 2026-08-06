@@ -226,12 +226,12 @@
       "한국환경공단 - 한국환경공단": true
     },
     "layout": {
-      "item_width": 2,
-      "site_width": 1,
+      "item_width": 1.7,
+      "site_width": 1.0,
       "padding": 3,
-      "align": "center",
-      "spacer": 4,
       "row_height": 38,
+      "align": "center",
+      "spacer": 4.0,
       "header_bg": "#1f77b4",
       "header_text": "#ffffff",
       "item_bg": "#f0f2f6",
