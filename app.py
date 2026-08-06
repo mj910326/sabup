@@ -944,8 +944,10 @@ elif menu == "📋 월초체크리스트":
         "item_width": 2,
         "site_width": 1,
         "padding": 10,
-        "align": "center"
+        "align": "center",
+        "spacer": 0
     })
+    cl["layout"].setdefault("spacer", 0)
     items = cl.get("items", [])
 
     # 전체 사업장 목록
@@ -1025,12 +1027,17 @@ elif menu == "📋 월초체크리스트":
             with c2:
                 site_width = st.slider("사업장 칸 너비", 1, 5, layout.get("site_width", 1))
                 align = st.selectbox("글자 정렬", ["가운데", "왼쪽"], index=0 if layout.get("align", "center") == "center" else 1)
+            spacer = st.slider(
+                "오른쪽 빈 여백 (표를 좁게 만들기) - 클수록 표가 왼쪽으로 좁아짐",
+                0, 20, layout.get("spacer", 0)
+            )
             if st.form_submit_button("적용", type="primary"):
                 cl["layout"] = {
                     "item_width": item_width,
                     "site_width": site_width,
                     "padding": padding,
-                    "align": "center" if align == "가운데" else "left"
+                    "align": "center" if align == "가운데" else "left",
+                    "spacer": spacer
                 }
                 save_data(data)
                 st.success("적용됨! 아래 표에 바로 반영됩니다.")
@@ -1041,6 +1048,7 @@ elif menu == "📋 월초체크리스트":
     layout = cl["layout"]
     align = layout.get("align", "center")
     padding = layout.get("padding", 10)
+    spacer = layout.get("spacer", 0)
     css_align = "center" if align == "center" else "flex-start"
     text_align = "center" if align == "center" else "left"
 
@@ -1052,8 +1060,15 @@ elif menu == "📋 월초체크리스트":
         padding: {padding}px !important;
     }}
     div[data-testid="stCheckbox"] {{
-        display: flex;
-        justify-content: {css_align};
+        display: flex !important;
+        justify-content: {css_align} !important;
+        width: 100% !important;
+    }}
+    div[data-testid="stCheckbox"] > label {{
+        display: flex !important;
+        justify-content: {css_align} !important;
+        width: 100% !important;
+        margin: 0 !important;
     }}
     </style>
     """, unsafe_allow_html=True)
@@ -1062,6 +1077,8 @@ elif menu == "📋 월초체크리스트":
         st.warning("표시할 사업장이 없습니다. 위에서 사업장을 선택해주세요.")
     else:
         col_widths = [layout.get("item_width", 2)] + [layout.get("site_width", 1)] * len(visible_sites)
+        if spacer > 0:
+            col_widths = col_widths + [spacer]
 
         # ── 헤더 (테두리 박스) ──
         header_cols = st.columns(col_widths, gap="small")
@@ -1097,7 +1114,7 @@ elif menu == "📋 월초체크리스트":
                                 cl["checked"][site_key][item] = new_val
                                 save_data(data)
                         else:
-                            st.markdown("—")
+                            st.markdown(f"<div style='text-align:{text_align}'>—</div>", unsafe_allow_html=True)
 
     st.markdown("---")
 
