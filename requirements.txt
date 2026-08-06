@@ -1,6 +1,6 @@
-streamlit
+streamlit>=1.44
 pandas
 anthropic
 openpyxl
 xlrd
-google-generativeai
+requests
