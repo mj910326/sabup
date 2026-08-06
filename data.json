@@ -228,7 +228,7 @@
     "layout": {
       "item_width": 0.9,
       "site_width": 0.8,
-      "padding": 3,
+      "padding": 2,
       "row_height": 38,
       "align": "center",
       "spacer": 4.0,
