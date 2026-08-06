@@ -196,7 +196,7 @@
     },
     "checked": {
       "풀무원 - SR6": {
-        "근태": true,
+        "근태": false,
         "청구서": true,
         "매출세금계산서 발행": true,
         "매출세금계산서 결재": true,
@@ -224,6 +224,12 @@
       "미리디 - 미리디": true,
       "국세 - 국세": true,
       "한국환경공단 - 한국환경공단": true
+    },
+    "layout": {
+      "item_width": 2,
+      "site_width": 1,
+      "padding": 10,
+      "align": "center"
     }
   }
 }
