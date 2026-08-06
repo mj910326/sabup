@@ -230,7 +230,7 @@
       "site_width": 1.0,
       "padding": 3,
       "row_height": 38,
-      "align": "left",
+      "align": "center",
       "spacer": 4.0,
       "header_bg": "#1f77b4",
       "header_text": "#ffffff",
