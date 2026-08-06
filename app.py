@@ -189,13 +189,14 @@ def github_load():
         return None
 
 def github_save(data):
-    """data.json을 GitHub 저장소에 커밋한다. 실패해도 조용히 넘어간다."""
+    """data.json을 GitHub 저장소에 커밋한다. 결과를 세션에 기록한다."""
     if not GITHUB_TOKEN:
-        return
+        st.session_state["_gh_status"] = ("none", "GITHUB_TOKEN이 설정되지 않아 영구 저장이 꺼져 있습니다.")
+        return False
     try:
         import requests, base64
         url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_PATH}"
-        get_resp = requests.get(url, headers=_github_headers(), params={"ref": GITHUB_BRANCH}, timeout=10)
+        get_resp = requests.get(url, headers=_github_headers(), params={"ref": GITHUB_BRANCH}, timeout=15)
         sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
         content_str = json.dumps(data, ensure_ascii=False, indent=2)
         b64 = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
@@ -206,9 +207,35 @@ def github_save(data):
         }
         if sha:
             payload["sha"] = sha
-        requests.put(url, headers=_github_headers(), json=payload, timeout=10)
-    except Exception:
-        pass
+        put_resp = requests.put(url, headers=_github_headers(), json=payload, timeout=15)
+        if put_resp.status_code in (200, 201):
+            st.session_state["_gh_status"] = ("ok", f"GitHub 저장 완료 ({datetime.now().strftime('%H:%M:%S')})")
+            return True
+        else:
+            try:
+                detail = put_resp.json().get("message", "")
+            except Exception:
+                detail = put_resp.text[:200]
+            st.session_state["_gh_status"] = (
+                "fail", f"GitHub 저장 실패 (코드 {put_resp.status_code}): {detail}"
+            )
+            return False
+    except Exception as e:
+        st.session_state["_gh_status"] = ("fail", f"GitHub 저장 오류: {type(e).__name__} - {str(e)[:200]}")
+        return False
+
+def show_save_status():
+    """마지막 저장 결과를 화면에 표시한다."""
+    status = st.session_state.get("_gh_status")
+    if not status:
+        return
+    kind, msg = status
+    if kind == "ok":
+        st.success(f"💾 {msg}")
+    elif kind == "fail":
+        st.error(f"⚠️ {msg}\n\n데이터가 영구 저장되지 않았습니다. Secrets의 GITHUB_TOKEN을 확인해주세요.")
+    else:
+        st.warning(f"⚠️ {msg}")
 
 def get_default_data():
     return {
@@ -527,20 +554,18 @@ elif menu in menu_map and menu_map[menu][1] is not None:
                         "content": st.session_state[f"s1_{sk}"]
                     })
                     save_data(data)
-                    st.success("저장됨!")
+                    show_save_status()
 
         # ── Step 2 ──
         elif step == "Step 2 - 급여자료보고서 분석":
-            if has_step1:
-                st.info("📌 Step1 청구서 분석 결과를 참고합니다.")
-            else:
-                st.info("📌 Step1 없이 급여자료보고서만으로 분석합니다.")
+            sal_file = st.file_uploader(
+                "급여자료보고서 (선택 - 없어도 Step1 기반으로 분석 가능)",
+                type=["xlsx", "xls"], key=f"sal_{sk}"
+            )
 
-            sal_file = st.file_uploader("급여자료보고서", type=["xlsx", "xls"], key=f"sal_{sk}")
-
+            # 기준월 결정
             if sal_file:
                 sal_month = extract_month_from_filename(sal_file.name) or "당월"
-                # 전월 추정
                 match = re.search(r'(\d{4})년 (\d{2})월', sal_month)
                 if match:
                     y, m = int(match.group(1)), int(match.group(2))
@@ -549,24 +574,69 @@ elif menu in menu_map and menu_map[menu][1] is not None:
                     sal_prev_month = f"{prev_y}년 {prev_m:02d}월"
                 else:
                     sal_prev_month = "전월"
-
                 st.success(f"✅ {sal_month} 급여자료보고서 업로드 완료!")
+            else:
+                sal_month = st.session_state.get(f"s1_curr_month_{sk}", "당월")
+                sal_prev_month = st.session_state.get(f"s1_prev_month_{sk}", "전월")
 
-                if st.button("🤖 급여보고서 분석 시작", type="primary", key=f"btn2_{sk}"):
+            # 실행 가능 여부 안내
+            if sal_file:
+                st.info("📌 급여자료보고서 실제 수치 기준으로 분석합니다. (가장 정확)")
+                can_run = True
+            elif has_step1:
+                st.info(
+                    f"📌 파일 없이 **Step1 청구서 분석 결과({sal_prev_month} → {sal_month})** 기반으로 "
+                    "증감사유를 생성합니다.\n\n"
+                    "⚠️ 청구서는 VAT 포함, 급여자료보고서는 VAT 제외 기준이라 "
+                    "**금액은 추정치**입니다. 증감사유 문구 초안 용도로 쓰시고, "
+                    "정확한 금액이 필요하면 파일을 올려주세요."
+                )
+                can_run = True
+            else:
+                st.warning(
+                    "⚠️ Step1 청구서 분석을 먼저 실행하거나, 급여자료보고서 파일을 올려주세요."
+                )
+                can_run = False
+
+            if can_run:
+                btn_label = "🤖 급여보고서 분석 시작" if sal_file else "🤖 Step1 기반으로 증감사유 생성"
+                if st.button(btn_label, type="primary", key=f"btn2_{sk}"):
                     with st.spinner("분석 중..."):
                         try:
-                            sal_text = read_salary_report(sal_file)
                             step1_ref = st.session_state.get(f"s1_{sk}", "없음 (청구서 미업로드)")
                             s1_prev = st.session_state.get(f"s1_prev_month_{sk}", sal_prev_month)
                             s1_curr = st.session_state.get(f"s1_curr_month_{sk}", sal_month)
+
+                            if sal_file:
+                                sal_text = read_salary_report(sal_file)
+                                source_note = """※ 급여자료보고서 수치(VAT 제외) 기준으로 작성하세요.
+※ 청구서는 참고용이며, 금액은 급여자료보고서 기준으로 작성하세요."""
+                                data_block = f"""[급여자료보고서 수치]
+{sal_text}
+
+[청구서 분석 참고 - 인원/수당 상세 내용]
+{step1_ref}"""
+                                estimate_header = ""
+                            else:
+                                source_note = """※ 급여자료보고서 파일이 없습니다. Step1 청구서 분석 결과만으로 작성하세요.
+※ 청구서는 VAT 포함 금액이므로, 급여자료보고서 기준(VAT 제외)으로 환산하세요.
+   - VAT 제외 금액 = 청구서 금액 ÷ 1.1 (부가세 10% 제외)
+   - 환산한 금액은 추정치이므로 표에 "(추정)" 표기
+※ 급여지급율 등 청구서에서 알 수 없는 수치는 "파일 필요"로 표기하고 추측하지 마세요.
+※ 인원/수당 변동 원인은 Step1 내용을 그대로 활용하세요."""
+                                data_block = f"""[Step1 청구서 분석 결과 - 이것이 유일한 데이터입니다]
+{step1_ref}"""
+                                estimate_header = (
+                                    "\n\n> ⚠️ **이 결과는 청구서(VAT 포함) 기반 추정치입니다.** "
+                                    "정확한 금액은 급여자료보고서 파일을 올려 확인하세요.\n"
+                                )
 
                             client_obj = anthropic.Anthropic(api_key=API_KEY)
                             prompt = f"""당신은 노무/급여 전문가입니다.
 {site} {s1_curr} 급여자료보고서를 분석하여, 담당자가 ERP에 입력할 증감사유 멘트를 작성해주세요.
 
 ※ 이 멘트는 담당자가 ERP 급여자료보고서의 증감사유 칸에 그대로 입력할 내용입니다.
-※ 급여자료보고서 수치(VAT 제외) 기준으로 작성하세요.
-※ 청구서는 참고용이며, 금액은 급여자료보고서 기준으로 작성하세요.
+{source_note}
 
 분석 기준월: 전월={s1_prev}, 당월={s1_curr}
 모든 분석에서 반드시 "{s1_prev}/{s1_curr}" 실제 월명을 사용하세요.
@@ -578,12 +648,9 @@ elif menu in menu_map and menu_map[menu][1] is not None:
 - 변동 없는 항목 생략
 - 악화/개선 금지. 상승/하락/증가/감소만 사용
 - 각 항목 원인은 줄 나눠서 간결하게
+- 데이터에 없는 수치는 절대 지어내지 말고 "-" 또는 "파일 필요"로 표기
 
-[급여자료보고서 수치]
-{sal_text}
-
-[청구서 분석 참고 - 인원/수당 상세 내용]
-{step1_ref}
+{data_block}
 
 아래 형식으로 작성하세요:
 
@@ -636,7 +703,7 @@ elif menu in menu_map and menu_map[menu][1] is not None:
                                 max_tokens=2000,
                                 messages=[{"role": "user", "content": prompt}]
                             )
-                            st.session_state[f"s2_{sk}"] = msg.content[0].text
+                            st.session_state[f"s2_{sk}"] = estimate_header + msg.content[0].text
 
                         except Exception as e:
                             st.error(f"오류: {str(e)}")
@@ -651,7 +718,7 @@ elif menu in menu_map and menu_map[menu][1] is not None:
                         "content": st.session_state[f"s2_{sk}"]
                     })
                     save_data(data)
-                    st.success("저장됨!")
+                    show_save_status()
 
         # ── Step 3 ──
         elif step == "Step 3 - 매출이익 분석":
@@ -755,7 +822,7 @@ elif menu in menu_map and menu_map[menu][1] is not None:
                         "content": st.session_state[f"s3_{sk}"]
                     })
                     save_data(data)
-                    st.success("저장됨!")
+                    show_save_status()
 
             # ── 예상수지 ──
             if profit_file:
@@ -845,7 +912,7 @@ elif menu in menu_map and menu_map[menu][1] is not None:
                             "content": st.session_state[f"s3_fc_{sk}"]
                         })
                         save_data(data)
-                        st.success("저장됨!")
+                        show_save_status()
 
     # ── 회의록 ──
     with tab2:
@@ -859,7 +926,7 @@ elif menu in menu_map and menu_map[menu][1] is not None:
                 if m_title:
                     sdata["meetings"].append({"date": str(m_date), "title": m_title, "participants": m_participants, "content": m_content})
                     save_data(data)
-                    st.success("저장됨!")
+                    show_save_status()
                     st.rerun()
         for i, m in enumerate(reversed(sdata["meetings"])):
             with st.expander(f"📝 {m['date']} - {m['title']}"):
@@ -1287,7 +1354,7 @@ elif menu == "📋 월초체크리스트":
                     for item, val in toggles.items():
                         cl["site_enabled"][sel_site][item] = val
                     save_data(data)
-                    st.success("저장됨!")
+                    show_save_status()
                     st.rerun()
 
 # ─────────────────────────────────────────
@@ -1296,7 +1363,63 @@ elif menu == "📋 월초체크리스트":
 elif menu == "⚙️ 설정":
     st.title("⚙️ 설정")
     st.markdown("---")
-    tab_s1, tab_s2, tab_s3 = st.tabs(["🎨 화면 설정", "✏️ 이름 변경", "➕ 추가/삭제"])
+    tab_s1, tab_s2, tab_s3, tab_s4 = st.tabs(["🎨 화면 설정", "✏️ 이름 변경", "➕ 추가/삭제", "💾 저장 상태"])
+
+    with tab_s4:
+        st.markdown("### 💾 데이터 영구 저장 상태")
+        st.caption("Streamlit Cloud는 앱이 재시작되면 로컬 파일이 초기화됩니다. "
+                   "GitHub에 저장해야 다음날에도 데이터가 유지됩니다.")
+
+        if not GITHUB_TOKEN:
+            st.error(
+                "⚠️ **GITHUB_TOKEN이 설정되지 않았습니다.**\n\n"
+                "이 상태에서는 히스토리·체크리스트가 앱 재시작 시 사라집니다.\n\n"
+                "Streamlit Cloud → 앱 Settings → Secrets 에 아래를 추가하세요:\n"
+                "```\nGITHUB_TOKEN = \"ghp_...\"\n```"
+            )
+        else:
+            st.info(f"토큰 설정됨 (끝 4자리: ...{GITHUB_TOKEN[-4:]}) / 저장소: {GITHUB_REPO}")
+
+        if st.button("🔍 저장 연결 테스트", type="primary"):
+            with st.spinner("GitHub 연결 확인 중..."):
+                ok = github_save(data)
+            show_save_status()
+            if ok:
+                st.balloons()
+                st.markdown(
+                    f"✅ 정상입니다. [저장소에서 data.json 확인하기]"
+                    f"(https://github.com/{GITHUB_REPO}/blob/{GITHUB_BRANCH}/{GITHUB_PATH})"
+                )
+            else:
+                st.markdown("""
+**확인할 것:**
+1. 토큰에 **repo** 권한이 있는지 (Fine-grained 토큰이면 Contents: Read and write)
+2. 토큰이 만료되지 않았는지
+3. 저장소 이름이 맞는지 (`mj910326/sabup`)
+4. 기본 브랜치가 `main`인지 (`master`면 코드 수정 필요)
+                """)
+
+        st.markdown("---")
+        st.markdown("**현재 저장된 데이터 요약**")
+        total_hist = sum(
+            len(sd.get("history", []))
+            for cd in data["clients"].values()
+            for sd in cd["sites"].values()
+        )
+        total_meet = sum(
+            len(sd.get("meetings", []))
+            for cd in data["clients"].values()
+            for sd in cd["sites"].values()
+        )
+        total_issue = sum(
+            len(sd.get("issues", []))
+            for cd in data["clients"].values()
+            for sd in cd["sites"].values()
+        )
+        m1, m2, m3 = st.columns(3)
+        m1.metric("AI 분석 히스토리", f"{total_hist}건")
+        m2.metric("회의록", f"{total_meet}건")
+        m3.metric("이슈사항", f"{total_issue}건")
 
     with tab_s1:
         with st.form("display_form"):
