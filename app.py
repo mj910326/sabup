@@ -127,6 +127,28 @@ def extract_ym_from_filename(filename):
     return None, None
 
 
+def _num(v):
+    """셀 값을 숫자로 안전하게 변환. 숫자가 아니면 0."""
+    if v is None:
+        return 0
+    if isinstance(v, bool):
+        return 0
+    if isinstance(v, (int, float)):
+        return v
+    s = str(v).strip().replace(",", "").replace("원", "")
+    if s in ("", "-", "--", "- -", "nan", "None"):
+        return 0
+    # 괄호 표기 음수 (1,000) → -1000
+    neg = s.startswith("(") and s.endswith(")")
+    if neg:
+        s = s[1:-1]
+    try:
+        n = float(s)
+        return -n if neg else n
+    except (ValueError, TypeError):
+        return 0
+
+
 def read_total_labor_file(file_bytes):
     """총인건비 파일 로드"""
     import io
@@ -163,7 +185,7 @@ def collect_payslip_rows(wb, worksite_names):
         rows.append({
             "site": site,
             "name": str(name).strip(),
-            "pay": [sal.cell(r, c).value or 0 for c in range(5, 15)],  # E~N
+            "pay": [_num(sal.cell(r, c).value) for c in range(5, 15)],  # E~N
         })
 
     extra = defaultdict(lambda: {"retire_annual": 0, "incentive": 0})
@@ -175,19 +197,19 @@ def collect_payslip_rows(wb, worksite_names):
             if site not in worksite_names:
                 continue
             nm = etc.cell(r, 4).value
-            amt = etc.cell(r, 13).value or 0   # M: 계
+            amt = _num(etc.cell(r, 13).value)   # M: 계
             reason = etc.cell(r, 14).value or ""
             if not nm:
                 if amt:
                     unassigned.append((str(reason).strip() or "사유없음", amt))
                 continue
             nm = str(nm).strip()
-            extra[nm]["retire_annual"] += etc.cell(r, 10).value or 0     # J: 퇴사자 연차수당
+            extra[nm]["retire_annual"] += _num(etc.cell(r, 10).value)     # J: 퇴사자 연차수당
             extra[nm]["incentive"] += (
-                (etc.cell(r, 7).value or 0)      # G: 교통비
-                + (etc.cell(r, 8).value or 0)    # H: 고객사지급
-                + (etc.cell(r, 9).value or 0)    # I: 기타
-                + (etc.cell(r, 11).value or 0)   # K: 명절 교통비
+                _num(etc.cell(r, 7).value)      # G: 교통비
+                + _num(etc.cell(r, 8).value)    # H: 고객사지급
+                + _num(etc.cell(r, 9).value)    # I: 기타
+                + _num(etc.cell(r, 11).value)   # K: 명절 교통비
             )
 
     rows.sort(key=lambda x: x["name"])
