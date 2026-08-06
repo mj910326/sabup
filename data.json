@@ -196,7 +196,7 @@
     },
     "checked": {
       "풀무원 - SR6": {
-        "근태": true,
+        "근태": false,
         "청구서": true,
         "매출세금계산서 발행": false,
         "매출세금계산서 결재": false,
@@ -230,7 +230,12 @@
       "site_width": 1,
       "padding": 3,
       "align": "center",
-      "spacer": 4
+      "spacer": 4,
+      "row_height": 38,
+      "header_bg": "#1f77b4",
+      "header_text": "#ffffff",
+      "item_bg": "#f0f2f6",
+      "item_text": "#262730"
     }
   }
 }
