@@ -226,9 +226,9 @@
       "한국환경공단 - 한국환경공단": true
     },
     "layout": {
-      "item_width": 2,
+      "item_width": 1,
       "site_width": 1,
-      "padding": 10,
+      "padding": 3,
       "align": "center"
     }
   }
