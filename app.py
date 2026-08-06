@@ -108,6 +108,184 @@ def read_profit_file(file):
     except Exception as e:
         return f"읽기 오류: {str(e)}", None, None
 
+# ─────────────────────────────────────────
+# 급여내역서 생성 (총인건비 파일 → 사업장별 급여내역서)
+# ─────────────────────────────────────────
+PAYSLIP_HEADERS = [
+    "사업장", "성명", "기본급", "고정\n연장수당", "고정\n야간수당", "직책\n수당",
+    "기타\n수당", "연차\n수당", "주휴\n수당", "야간\n수당", "휴일\n수당",
+    "연장\n수당", "가지급", "퇴사자연차수당", "인센티브", "지급\n액계",
+]
+PAYSLIP_FONT = "맑은 고딕"
+
+
+def extract_ym_from_filename(filename):
+    """파일명에서 연/월 추출 (예: 2026_06 → (2026, 6))"""
+    m = re.search(r"(20\d{2})[._\-]?(0[1-9]|1[0-2])", str(filename))
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return None, None
+
+
+def read_total_labor_file(file_bytes):
+    """총인건비 파일 로드"""
+    import io
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    if "급여" not in wb.sheetnames:
+        raise ValueError("'급여' 시트를 찾을 수 없습니다. 총인건비 파일이 맞는지 확인해주세요.")
+    return wb
+
+
+def list_worksites(wb):
+    """급여 시트에 존재하는 사업장명 목록"""
+    sal = wb["급여"]
+    seen = []
+    for r in range(4, sal.max_row + 1):
+        v = sal.cell(r, 2).value
+        if v and v not in seen:
+            seen.append(v)
+    return seen
+
+
+def collect_payslip_rows(wb, worksite_names):
+    """선택 사업장의 급여 + 기타비용 데이터를 개인별로 모은다."""
+    from collections import defaultdict
+    sal = wb["급여"]
+    rows = []
+    for r in range(4, sal.max_row + 1):
+        site = sal.cell(r, 2).value
+        if site not in worksite_names:
+            continue
+        name = sal.cell(r, 4).value
+        if not name:
+            continue
+        rows.append({
+            "site": site,
+            "name": str(name).strip(),
+            "pay": [sal.cell(r, c).value or 0 for c in range(5, 15)],  # E~N
+        })
+
+    extra = defaultdict(lambda: {"retire_annual": 0, "incentive": 0})
+    unassigned = []
+    if "기타비용" in wb.sheetnames:
+        etc = wb["기타비용"]
+        for r in range(2, etc.max_row + 1):
+            site = etc.cell(r, 2).value
+            if site not in worksite_names:
+                continue
+            nm = etc.cell(r, 4).value
+            amt = etc.cell(r, 13).value or 0   # M: 계
+            reason = etc.cell(r, 14).value or ""
+            if not nm:
+                if amt:
+                    unassigned.append((str(reason).strip() or "사유없음", amt))
+                continue
+            nm = str(nm).strip()
+            extra[nm]["retire_annual"] += etc.cell(r, 10).value or 0     # J: 퇴사자 연차수당
+            extra[nm]["incentive"] += (
+                (etc.cell(r, 7).value or 0)      # G: 교통비
+                + (etc.cell(r, 8).value or 0)    # H: 고객사지급
+                + (etc.cell(r, 9).value or 0)    # I: 기타
+                + (etc.cell(r, 11).value or 0)   # K: 명절 교통비
+            )
+
+    rows.sort(key=lambda x: x["name"])
+    for row in rows:
+        e = extra.get(row["name"], {"retire_annual": 0, "incentive": 0})
+        row["retire_annual"] = e["retire_annual"]
+        row["incentive"] = e["incentive"]
+    return rows, unassigned
+
+
+def build_payslip_workbook(rows, title_text):
+    """급여내역서 엑셀 생성 → BytesIO 반환"""
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    thin = Side(style="thin")
+    medium = Side(style="medium")
+    border_thin = Border(left=thin, right=thin, top=thin, bottom=thin)
+    header_fill = PatternFill("solid", fgColor="D9D9D9")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "급여"
+
+    ws["B2"] = title_text
+    ws["B2"].font = Font(name=PAYSLIP_FONT, size=16, bold=True)
+    ws.row_dimensions[2].height = 25.2
+
+    for i, label in enumerate(PAYSLIP_HEADERS):
+        col = 2 + i
+        cell = ws.cell(4, col, label)
+        cell.font = Font(name=PAYSLIP_FONT, size=8)
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border_thin
+        ws.cell(5, col).border = border_thin
+        ws.cell(5, col).fill = header_fill
+        ws.merge_cells(start_row=4, start_column=col, end_row=5, end_column=col)
+    ws.row_dimensions[4].height = 13.8
+    ws.row_dimensions[5].height = 13.8
+
+    start_row = 6
+    for idx, row in enumerate(rows):
+        r = start_row + idx
+        ws.row_dimensions[r].height = 22.8
+        values = (
+            [row["site"], row["name"]]
+            + list(row["pay"])
+            + [None, row["retire_annual"] or None, row["incentive"] or None]
+        )
+        for i, v in enumerate(values):
+            cell = ws.cell(r, 2 + i, v)
+            cell.font = Font(name=PAYSLIP_FONT, size=8)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = border_thin
+            if i >= 2:
+                cell.number_format = "###,##0"
+        q = ws.cell(r, 17, f"=SUM(D{r}:P{r})")
+        q.font = Font(name=PAYSLIP_FONT, size=8)
+        q.alignment = Alignment(horizontal="center", vertical="center")
+        q.border = border_thin
+        q.number_format = "###,##0"
+
+    last = start_row + len(rows) - 1
+    total_row = last + 1
+    ws.row_dimensions[total_row].height = 19.8
+    ws.merge_cells(start_row=total_row, start_column=2, end_row=total_row, end_column=3)
+    tc = ws.cell(total_row, 2, "합계")
+    tc.font = Font(name=PAYSLIP_FONT, size=12, bold=True)
+    tc.fill = header_fill
+    tc.alignment = Alignment(horizontal="center", vertical="center")
+    tc.border = Border(left=medium, right=thin, top=medium, bottom=medium)
+    ws.cell(total_row, 3).border = Border(left=thin, right=medium, top=medium, bottom=medium)
+
+    for col in range(4, 18):
+        L = get_column_letter(col)
+        c = ws.cell(total_row, col, f"=SUM({L}{start_row}:{L}{last})")
+        c.font = Font(name=PAYSLIP_FONT, size=10 if col == 17 else 8, bold=True)
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.number_format = "###,##0"
+        c.border = Border(left=thin, right=thin, top=medium, bottom=medium)
+
+    ws.column_dimensions["A"].width = 4.5
+    ws.column_dimensions["B"].width = 18.0
+    ws.column_dimensions["C"].width = 11.1
+    for col in range(4, 17):
+        ws.column_dimensions[get_column_letter(col)].width = 8.6
+    ws.column_dimensions["Q"].width = 13.5
+    ws.freeze_panes = "A6"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
 def read_salary_report(file):
     """급여자료보고서 핵심 데이터 구조적 추출"""
     try:
@@ -400,7 +578,9 @@ elif menu in menu_map and menu_map[menu][1] is not None:
     st.title(f"🍽️ {client} - {site}")
     st.markdown("---")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 AI 분석", "📝 회의록", "⚠️ 이슈사항", "📋 히스토리"])
+    tab1, tab5, tab2, tab3, tab4 = st.tabs(
+        ["📊 AI 분석", "📄 급여내역서", "📝 회의록", "⚠️ 이슈사항", "📋 히스토리"]
+    )
 
     with tab1:
         st.markdown("### 📊 AI 분석")
@@ -971,6 +1151,128 @@ elif menu in menu_map and menu_map[menu][1] is not None:
                         sdata["issues"].pop(len(sdata["issues"])-1-i)
                         save_data(data)
                         st.rerun()
+
+    # ── 급여내역서 ──
+    with tab5:
+        st.markdown("### 📄 급여내역서 자동 생성")
+        st.caption("총인건비 파일을 올리면 이 사업장 인원만 뽑아 급여내역서 엑셀로 만들어 드립니다.")
+
+        tl_file = st.file_uploader(
+            "총인건비 파일 (예: 급여작업중_2026_06_FNC_총인건비_○○○.xlsx)",
+            type=["xlsx", "xlsm"], key=f"tl_{sk}"
+        )
+
+        if tl_file:
+            try:
+                tl_bytes = tl_file.read()
+                tl_file.seek(0)
+                wb_src = read_total_labor_file(tl_bytes)
+                worksites = list_worksites(wb_src)
+
+                # 이 사업장 키워드로 후보 자동 선택
+                kws = SITE_KEYWORDS.get(site, {}).get("salary", [site])
+                default_sel = [w for w in worksites if any(k in str(w) for k in kws)]
+
+                st.success(f"✅ 총인건비 파일 읽기 완료 (사업장 {len(worksites)}개 감지)")
+
+                sel_sites = st.multiselect(
+                    "이 급여내역서에 포함할 사업장 (파일 안의 실제 사업장명)",
+                    worksites,
+                    default=default_sel,
+                    key=f"tlsel_{sk}",
+                    help="키워드로 자동 선택했습니다. 빠지거나 더해야 할 게 있으면 직접 조정하세요."
+                )
+
+                y, m = extract_ym_from_filename(tl_file.name)
+                c1, c2 = st.columns([2, 1])
+                with c1:
+                    disp_name = st.text_input(
+                        "제목에 넣을 사업장 표시명",
+                        value=st.session_state.get(f"tlname_{sk}", site),
+                        key=f"tlname_{sk}"
+                    )
+                with c2:
+                    ym_default = f"{str(y)[2:]}년 {m}월" if y and m else ""
+                    ym_text = st.text_input("연월", value=ym_default, key=f"tlym_{sk}",
+                                            placeholder="26년 6월")
+
+                title_text = f"▣ {disp_name} {ym_text} 급여내역서".replace("  ", " ").strip()
+                st.caption(f"생성될 제목: **{title_text}**")
+
+                if not sel_sites:
+                    st.warning("사업장을 1개 이상 선택해주세요.")
+                else:
+                    rows, unassigned = collect_payslip_rows(wb_src, sel_sites)
+
+                    if not rows:
+                        st.error("선택한 사업장에 해당하는 인원이 없습니다.")
+                    else:
+                        # 미리보기
+                        prev = []
+                        for r in rows:
+                            total = sum(r["pay"]) + r["retire_annual"] + r["incentive"]
+                            prev.append({
+                                "성명": r["name"],
+                                "기본급": r["pay"][0],
+                                "주휴수당": r["pay"][6],
+                                "휴일수당": r["pay"][8],
+                                "연장수당": r["pay"][9],
+                                "퇴사자연차": r["retire_annual"],
+                                "인센티브": r["incentive"],
+                                "지급액계": total,
+                            })
+                        df_prev = pd.DataFrame(prev)
+
+                        mc1, mc2 = st.columns(2)
+                        mc1.metric("인원", f"{len(rows)}명")
+                        mc2.metric("지급액계 합계", f"{int(df_prev['지급액계'].sum()):,}원")
+
+                        st.dataframe(df_prev, use_container_width=True, hide_index=True)
+
+                        if unassigned:
+                            st.info(
+                                "ℹ️ 기타비용 중 **개인 이름이 없는 항목**은 급여내역서에 들어가지 않습니다 "
+                                "(청구서에는 별도 반영):\n\n"
+                                + "\n".join(f"- {rsn}: {int(amt):,}원" for rsn, amt in unassigned)
+                            )
+
+                        st.warning(
+                            "⚠️ **가지급 열은 비어 있습니다.** 원본 데이터에 없는 항목이라 "
+                            "다운로드 후 직접 입력하셔야 합니다. "
+                            "그 밖에 수기 조정할 부분도 엑셀에서 수정하세요."
+                        )
+
+                        buf = build_payslip_workbook(rows, title_text)
+                        fname = f"{ym_text.replace(' ', '_')}_{disp_name}_급여내역서.xlsx".lstrip("_")
+                        st.download_button(
+                            "📥 급여내역서 엑셀 다운로드",
+                            data=buf,
+                            file_name=fname,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            type="primary",
+                            key=f"dl_{sk}"
+                        )
+
+            except Exception as e:
+                st.error(f"파일 처리 오류: {type(e).__name__} - {str(e)}")
+                st.caption("총인건비 파일에 '급여' 시트와 '기타비용' 시트가 있는지 확인해주세요.")
+        else:
+            with st.expander("ℹ️ 어떤 파일을 올려야 하나요?"):
+                st.markdown("""
+**총인건비 파일**을 올려주세요. 아래 시트가 있어야 합니다.
+
+| 시트 | 사용하는 내용 |
+|---|---|
+| **급여** | 사업장·성명·기본급~연장수당 (개인별 급여 명세) |
+| **기타비용** | 퇴사자 연차수당, 교통비·고객사지급(→인센티브) |
+
+**자동 매핑 규칙**
+- 기본급 ~ 연장수당 10개 항목 → 급여 시트에서 그대로
+- 퇴사자연차수당 → 기타비용 '퇴사자 연차수당' 열
+- 인센티브 → 기타비용의 교통비 + 고객사지급 + 기타 + 명절교통비 합산
+- 지급액계 → 위 전체 합 (엑셀 수식으로 들어감)
+- **가지급 → 빈칸** (원본에 없는 항목, 직접 입력 필요)
+                """)
 
     # ── 히스토리 ──
     with tab4:
