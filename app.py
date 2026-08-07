@@ -156,33 +156,32 @@ def _norm_header(v):
     return re.sub(r"\s+", "", str(v))
 
 
-# 급여내역서에 들어갈 금액 항목 (헤더 이름으로 찾는다)
-PAY_ITEM_HEADERS = [
-    "기본급", "고정연장수당", "고정야간수당", "직책수당", "기타수당",
-    "연차수당", "주휴수당", "야간수당", "휴일수당", "연장수당",
-]
+def _clean_label(v):
+    """헤더 표시용 문자열 (줄바꿈은 유지, 앞뒤 공백만 제거)"""
+    if v is None:
+        return ""
+    return str(v).strip()
 
 
 def detect_salary_layout(sal):
-    """급여 시트에서 헤더 행과 각 항목의 열 번호를 자동으로 찾는다.
+    """급여 시트에서 헤더 행, 사업장/성명 열, 금액 항목 열들을 자동으로 찾는다.
 
-    파일에 따라 열 위치가 다르므로(6월=E~N, 7월=S~AB 등) 위치를 고정하지 않고
-    헤더 이름으로 찾는다.
+    파일마다 열 위치가 다르므로(6월=E~N, 7월=S~AB 등) 위치를 고정하지 않는다.
+    금액 항목은 '기본급' 열부터 '지급액계' 열 직전까지를 모두 가져온다.
     """
     header_row = None
     col_site = col_name = None
 
-    # '사업장'과 '성명'이 같이 있는 행을 헤더 행으로 본다
     for r in range(1, min(12, sal.max_row) + 1):
-        found_site = found_name = None
+        f_site = f_name = None
         for c in range(1, sal.max_column + 1):
             h = _norm_header(sal.cell(r, c).value)
-            if h in ("사업장", "사업장명") and found_site is None:
-                found_site = c
-            elif h in ("성명", "사원명", "이름") and found_name is None:
-                found_name = c
-        if found_site and found_name:
-            header_row, col_site, col_name = r, found_site, found_name
+            if h in ("사업장", "사업장명") and f_site is None:
+                f_site = c
+            elif h in ("성명", "사원명", "이름") and f_name is None:
+                f_name = c
+        if f_site and f_name:
+            header_row, col_site, col_name = r, f_site, f_name
             break
 
     if header_row is None:
@@ -191,26 +190,34 @@ def detect_salary_layout(sal):
             "총인건비 파일 형식을 확인해주세요."
         )
 
-    # 금액 항목 열 찾기 (헤더 행 및 바로 위/아래 행까지 탐색)
-    item_cols = {}
-    search_rows = [header_row, header_row - 1, header_row + 1]
+    # 헤더 행 및 인접 행에서 열별 헤더 텍스트 수집
+    head_at = {}
     for c in range(1, sal.max_column + 1):
-        for r in search_rows:
+        for r in (header_row, header_row - 1, header_row + 1):
             if r < 1 or r > sal.max_row:
                 continue
             h = _norm_header(sal.cell(r, c).value)
-            if h in PAY_ITEM_HEADERS and h not in item_cols:
-                item_cols[h] = c
+            if h:
+                head_at.setdefault(c, (h, _clean_label(sal.cell(r, c).value)))
                 break
 
-    missing = [h for h in PAY_ITEM_HEADERS if h not in item_cols]
-    if "기본급" in missing:
-        raise ValueError(
-            "급여 시트에서 '기본급' 열을 찾지 못했습니다. "
-            f"찾지 못한 항목: {', '.join(missing)}"
-        )
+    col_basic = next((c for c, (h, _) in head_at.items() if h == "기본급"), None)
+    col_total = next((c for c, (h, _) in head_at.items() if h in ("지급액계", "지급계", "소득계")), None)
 
-    # 데이터 시작 행: 헤더 아래에서 성명이 실제로 채워진 첫 행
+    if col_basic is None:
+        raise ValueError("급여 시트에서 '기본급' 열을 찾지 못했습니다.")
+    if col_total is None or col_total <= col_basic:
+        col_total = col_basic + 11  # 지급액계를 못 찾으면 기본 범위로 대체
+
+    # 기본급 ~ 지급액계 직전까지가 급여 항목
+    pay_cols = []
+    for c in range(col_basic, col_total):
+        h, label = head_at.get(c, ("", ""))
+        if not label:
+            label = f"항목{c}"
+        pay_cols.append((c, label))
+
+    # 데이터 시작 행
     data_start = header_row + 1
     for r in range(header_row + 1, min(header_row + 8, sal.max_row) + 1):
         nm = sal.cell(r, col_name).value
@@ -224,8 +231,40 @@ def detect_salary_layout(sal):
         "data_start": data_start,
         "col_site": col_site,
         "col_name": col_name,
-        "item_cols": item_cols,
-        "missing": missing,
+        "pay_cols": pay_cols,
+    }
+
+
+def detect_extra_layout(etc):
+    """기타비용 시트에서 금액 항목 열들을 찾는다 (퇴사일 다음 ~ '계' 직전)."""
+    head = {}
+    for c in range(1, etc.max_column + 1):
+        head[c] = (_norm_header(etc.cell(1, c).value), _clean_label(etc.cell(1, c).value))
+
+    def find(*names):
+        return next((c for c, (h, _) in head.items() if h in names), None)
+
+    c_site = find("사업장명", "사업장") or 2
+    c_name = find("사원명", "성명") or 4
+    c_reason = find("사유") or 14
+    c_sum = find("계", "합계")
+    c_leave = find("퇴사일")
+
+    start = (c_leave + 1) if c_leave else 7
+    end = c_sum if c_sum else 13
+
+    amount_cols = []
+    for c in range(start, end):
+        h, label = head.get(c, ("", ""))
+        if label:
+            amount_cols.append((c, label))
+
+    return {
+        "col_site": c_site,
+        "col_name": c_name,
+        "col_reason": c_reason,
+        "col_sum": c_sum or 13,
+        "amount_cols": amount_cols,
     }
 
 
@@ -252,11 +291,15 @@ def list_worksites(wb):
 
 
 def collect_payslip_rows(wb, worksite_names):
-    """선택 사업장의 급여 + 기타비용 데이터를 개인별로 모은다."""
-    from collections import defaultdict
+    """선택 사업장의 급여 + 기타비용을 개인별로 모으고, 값이 있는 항목만 남긴다.
+
+    반환: (rows, columns, unassigned)
+      rows    : [{"site","name","values":{항목명: 금액}}]
+      columns : 실제로 값이 있는 항목명 목록 (급여 항목 → 기타비용 항목 순)
+      unassigned: 개인 이름이 없는 기타비용 (보험료 정산 등) [(사유, 금액)]
+    """
     sal = wb["급여"]
     lay = detect_salary_layout(sal)
-    item_cols = lay["item_cols"]
 
     rows = []
     for r in range(lay["data_start"], sal.max_row + 1):
@@ -266,63 +309,63 @@ def collect_payslip_rows(wb, worksite_names):
         name = sal.cell(r, lay["col_name"]).value
         if not name:
             continue
-        rows.append({
-            "site": site,
-            "name": str(name).strip(),
-            # 헤더 이름으로 찾은 열에서 읽는다 (없는 항목은 0)
-            "pay": [
-                _num(sal.cell(r, item_cols[h]).value) if h in item_cols else 0
-                for h in PAY_ITEM_HEADERS
-            ],
-        })
+        vals = {}
+        for c, label in lay["pay_cols"]:
+            vals[label] = vals.get(label, 0) + _num(sal.cell(r, c).value)
+        rows.append({"site": site, "name": str(name).strip(), "values": vals})
 
-    # ── 기타비용 (두 파일 모두 동일 구조) ──
-    extra = defaultdict(lambda: {"retire_annual": 0, "incentive": 0})
+    pay_labels = []
+    for _, label in lay["pay_cols"]:
+        if label not in pay_labels:
+            pay_labels.append(label)
+
+    # ── 기타비용 (개인에게 지급되는 항목만) ──
+    extra_labels = []
     unassigned = []
     if "기타비용" in wb.sheetnames:
         etc = wb["기타비용"]
-        ecol = {}
-        for c in range(1, etc.max_column + 1):
-            ecol[_norm_header(etc.cell(1, c).value)] = c
-
-        def ev(row, header, default_col):
-            c = ecol.get(header, default_col)
-            return _num(etc.cell(row, c).value)
-
-        c_site = ecol.get("사업장명", 2)
-        c_name = ecol.get("사원명", 4)
-        c_reason = ecol.get("사유", 14)
-
+        elay = detect_extra_layout(etc)
+        by_name = {}
         for r in range(2, etc.max_row + 1):
-            site = etc.cell(r, c_site).value
+            site = etc.cell(r, elay["col_site"]).value
             if site not in worksite_names:
                 continue
-            nm = etc.cell(r, c_name).value
-            amt = ev(r, "계", 13)
-            reason = etc.cell(r, c_reason).value or ""
+            nm = etc.cell(r, elay["col_name"]).value
             if not nm:
+                # 보험료 정산 등 개인에게 귀속되지 않는 항목 → 제외
+                amt = _num(etc.cell(r, elay["col_sum"]).value)
+                reason = etc.cell(r, elay["col_reason"]).value or ""
                 if amt:
                     unassigned.append((str(reason).strip() or "사유없음", amt))
                 continue
             nm = str(nm).strip()
-            extra[nm]["retire_annual"] += ev(r, "퇴사자연차수당", 10)
-            extra[nm]["incentive"] += (
-                ev(r, "교통비", 7)
-                + ev(r, "고객사지급", 8)
-                + ev(r, "기타", 9)
-                + ev(r, "명절교통비", 11)
-            )
+            slot = by_name.setdefault(nm, {})
+            for c, label in elay["amount_cols"]:
+                v = _num(etc.cell(r, c).value)
+                if v:
+                    slot[label] = slot.get(label, 0) + v
+
+        for _, label in elay["amount_cols"]:
+            if label not in extra_labels:
+                extra_labels.append(label)
+
+        for row in rows:
+            for label, v in by_name.get(row["name"], {}).items():
+                row["values"][label] = row["values"].get(label, 0) + v
+
+    # 값이 하나라도 있는 항목만 남긴다 (이번 달에 없는 항목은 제외)
+    all_labels = pay_labels + [l for l in extra_labels if l not in pay_labels]
+    columns = [
+        label for label in all_labels
+        if any(row["values"].get(label, 0) for row in rows)
+    ]
 
     rows.sort(key=lambda x: x["name"])
-    for row in rows:
-        e = extra.get(row["name"], {"retire_annual": 0, "incentive": 0})
-        row["retire_annual"] = e["retire_annual"]
-        row["incentive"] = e["incentive"]
-    return rows, unassigned, lay
+    return rows, columns, unassigned
 
 
-def build_payslip_workbook(rows, title_text):
-    """급여내역서 엑셀 생성 → BytesIO 반환"""
+def build_payslip_workbook(rows, columns, title_text):
+    """급여내역서 엑셀 생성 → BytesIO 반환 (항목 열은 columns에 따라 동적)"""
     import io
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -341,7 +384,10 @@ def build_payslip_workbook(rows, title_text):
     ws["B2"].font = Font(name=PAYSLIP_FONT, size=16, bold=True)
     ws.row_dimensions[2].height = 25.2
 
-    for i, label in enumerate(PAYSLIP_HEADERS):
+    headers = ["사업장", "성명"] + list(columns) + ["지급\n액계"]
+    n_cols = len(headers)
+
+    for i, label in enumerate(headers):
         col = 2 + i
         cell = ws.cell(4, col, label)
         cell.font = Font(name=PAYSLIP_FONT, size=8)
@@ -355,14 +401,15 @@ def build_payslip_workbook(rows, title_text):
     ws.row_dimensions[5].height = 13.8
 
     start_row = 6
+    first_amt = get_column_letter(4)                    # 첫 금액 열 (D)
+    last_amt = get_column_letter(2 + n_cols - 2)        # 지급액계 직전 열
+
     for idx, row in enumerate(rows):
         r = start_row + idx
         ws.row_dimensions[r].height = 22.8
-        values = (
-            [row["site"], row["name"]]
-            + list(row["pay"])
-            + [None, row["retire_annual"] or None, row["incentive"] or None]
-        )
+        values = [row["site"], row["name"]] + [
+            (row["values"].get(label, 0) or None) for label in columns
+        ]
         for i, v in enumerate(values):
             cell = ws.cell(r, 2 + i, v)
             cell.font = Font(name=PAYSLIP_FONT, size=8)
@@ -370,7 +417,7 @@ def build_payslip_workbook(rows, title_text):
             cell.border = border_thin
             if i >= 2:
                 cell.number_format = "###,##0"
-        q = ws.cell(r, 17, f"=SUM(D{r}:P{r})")
+        q = ws.cell(r, 2 + n_cols - 1, f"=SUM({first_amt}{r}:{last_amt}{r})")
         q.font = Font(name=PAYSLIP_FONT, size=8)
         q.alignment = Alignment(horizontal="center", vertical="center")
         q.border = border_thin
@@ -387,10 +434,11 @@ def build_payslip_workbook(rows, title_text):
     tc.border = Border(left=medium, right=thin, top=medium, bottom=medium)
     ws.cell(total_row, 3).border = Border(left=thin, right=medium, top=medium, bottom=medium)
 
-    for col in range(4, 18):
+    last_col = 2 + n_cols - 1
+    for col in range(4, last_col + 1):
         L = get_column_letter(col)
         c = ws.cell(total_row, col, f"=SUM({L}{start_row}:{L}{last})")
-        c.font = Font(name=PAYSLIP_FONT, size=10 if col == 17 else 8, bold=True)
+        c.font = Font(name=PAYSLIP_FONT, size=10 if col == last_col else 8, bold=True)
         c.alignment = Alignment(horizontal="center", vertical="center")
         c.number_format = "###,##0"
         c.border = Border(left=thin, right=thin, top=medium, bottom=medium)
@@ -398,9 +446,9 @@ def build_payslip_workbook(rows, title_text):
     ws.column_dimensions["A"].width = 4.5
     ws.column_dimensions["B"].width = 18.0
     ws.column_dimensions["C"].width = 11.1
-    for col in range(4, 17):
-        ws.column_dimensions[get_column_letter(col)].width = 8.6
-    ws.column_dimensions["Q"].width = 13.5
+    for col in range(4, last_col):
+        ws.column_dimensions[get_column_letter(col)].width = 9.5
+    ws.column_dimensions[get_column_letter(last_col)].width = 13.5
     ws.freeze_panes = "A6"
 
     buf = io.BytesIO()
@@ -1371,53 +1419,45 @@ elif menu in menu_map and menu_map[menu][1] is not None:
                 if not sel_sites:
                     st.warning("사업장을 1개 이상 선택해주세요.")
                 else:
-                    rows, unassigned, lay = collect_payslip_rows(wb_src, sel_sites)
-
-                    if lay["missing"]:
-                        st.warning(
-                            "⚠️ 급여 시트에서 다음 항목의 열을 찾지 못해 **0으로 처리**했습니다: "
-                            + ", ".join(lay["missing"])
-                        )
+                    rows, columns, unassigned = collect_payslip_rows(wb_src, sel_sites)
 
                     if not rows:
                         st.error("선택한 사업장에 해당하는 인원이 없습니다.")
+                    elif not columns:
+                        st.error("금액이 있는 항목이 없습니다. 사업장 선택을 확인해주세요.")
                     else:
-                        # 미리보기
+                        # 미리보기 (실제로 값이 있는 항목만 표시)
                         prev = []
                         for r in rows:
-                            total = sum(r["pay"]) + r["retire_annual"] + r["incentive"]
-                            prev.append({
-                                "성명": r["name"],
-                                "기본급": r["pay"][0],
-                                "주휴수당": r["pay"][6],
-                                "휴일수당": r["pay"][8],
-                                "연장수당": r["pay"][9],
-                                "퇴사자연차": r["retire_annual"],
-                                "인센티브": r["incentive"],
-                                "지급액계": total,
-                            })
+                            row_d = {"성명": r["name"]}
+                            total = 0
+                            for label in columns:
+                                v = r["values"].get(label, 0)
+                                row_d[label.replace("\n", " ")] = v
+                                total += v
+                            row_d["지급액계"] = total
+                            prev.append(row_d)
                         df_prev = pd.DataFrame(prev)
 
-                        mc1, mc2 = st.columns(2)
+                        mc1, mc2, mc3 = st.columns(3)
                         mc1.metric("인원", f"{len(rows)}명")
-                        mc2.metric("지급액계 합계", f"{int(df_prev['지급액계'].sum()):,}원")
+                        mc2.metric("항목 수", f"{len(columns)}개")
+                        mc3.metric("지급액계 합계", f"{int(df_prev['지급액계'].sum()):,}원")
 
+                        st.caption(
+                            "📌 이번 달 포함 항목: "
+                            + " · ".join(l.replace("\n", " ") for l in columns)
+                        )
                         st.dataframe(df_prev, use_container_width=True, hide_index=True)
 
                         if unassigned:
                             st.info(
-                                "ℹ️ 기타비용 중 **개인 이름이 없는 항목**은 급여내역서에 들어가지 않습니다 "
-                                "(청구서에는 별도 반영):\n\n"
+                                "ℹ️ 기타비용 중 **개인에게 귀속되지 않는 항목**은 제외했습니다 "
+                                "(보험료 정산 등, 청구서에는 별도 반영):\n\n"
                                 + "\n".join(f"- {rsn}: {int(amt):,}원" for rsn, amt in unassigned)
                             )
 
-                        st.warning(
-                            "⚠️ **가지급 열은 비어 있습니다.** 원본 데이터에 없는 항목이라 "
-                            "다운로드 후 직접 입력하셔야 합니다. "
-                            "그 밖에 수기 조정할 부분도 엑셀에서 수정하세요."
-                        )
-
-                        buf = build_payslip_workbook(rows, title_text)
+                        buf = build_payslip_workbook(rows, columns, title_text)
                         fname = f"{ym_text.replace(' ', '_')}_{disp_name}_급여내역서.xlsx".lstrip("_")
                         st.download_button(
                             "📥 급여내역서 엑셀 다운로드",
